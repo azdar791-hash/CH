@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLAZE | Чат обсуждения</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --bg: #0b0c10;
+            --panel: #1f2833;
+            --accent: #66fcf1;
+            --admin-color: #ff4b2b;
+            --text: #c5c6c7;
+        }
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+        header { background: var(--panel); padding: 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #45a29e; }
+        #chat { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        .msg { padding: 10px 15px; border-radius: 10px; max-width: 80%; font-size: 15px; word-wrap: break-word; }
+        .msg-sys { align-self: center; background: rgba(255,255,255,0.05); color: #888; font-size: 12px; }
+        .msg-me { align-self: flex-end; background: #45a29e; color: #000; }
+        .msg-remote { align-self: flex-start; background: var(--panel); }
+        .name-tag { font-size: 11px; font-weight: bold; display: block; margin-bottom: 4px; text-transform: uppercase; }
+        .admin-tag { color: var(--admin-color); }
+        .footer { padding: 15px; background: var(--panel); display: flex; flex-direction: column; gap: 5px; }
+        input { background: #0b0c10; border: 1px solid #45a29e; padding: 12px; border-radius: 8px; color: white; outline: none; width: 100%; box-sizing: border-box; }
+        .help { font-size: 11px; color: #666; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div id="role-display">Загрузка...</div>
+    <div style="font-size: 12px; color: var(--accent);">BLAZE SYSTEM</div>
+</header>
+
+<div id="chat">
+    <div class="msg msg-sys">Введите /admin для вызова администрации.</div>
+</div>
+
+<div class="footer">
+    <div class="help">/admin - позвать | /yes - ответить (админ) | /setadmin [имя]</div>
+    <input type="text" id="input" placeholder="Сообщение..." autocomplete="off">
+</div>
+
+<script>
+    const ADMIN_SERVER_ID = "BLAZE_SUPPORT_SERVER_FIXED_1"; 
+    let myName = prompt("Введите ваш ник:", "User_" + Math.floor(Math.random()*100));
+    let isAdmin = (myName === "BLAZE" || myName === "BLAZE OFFICIAL");
+    let peer, conn;
+    let pendingPeerId = null;
+
+    const chat = document.getElementById('chat');
+    const input = document.getElementById('input');
+    const roleDisplay = document.getElementById('role-display');
+
+    // 1. Инициализация Peer
+    if (isAdmin) {
+        peer = new Peer(ADMIN_SERVER_ID);
+        roleDisplay.innerHTML = `<b style="color:var(--admin-color)">АДМИНИСТРАТОР: ${myName}</b>`;
+    } else {
+        peer = new Peer();
+        roleDisplay.textContent = `Клиент: ${myName}`;
+    }
+
+    // 2. Слушаем входящие подключения
+    peer.on('connection', (c) => {
+        conn = c;
+        setupConn();
+        if (isAdmin) {
+            addMsg(`🚨 ЗАПРОС от клиента. Введите /yes для связи.`, "msg-sys");
+        }
+    });
+
+    function setupConn() {
+        conn.on('data', (data) => {
+            if (data.type === 'request' && isAdmin) {
+                pendingPeerId = data.id;
+                addMsg(`Клиент ${data.name} хочет обсудить покупку/аренду.`, "msg-remote", data.name);
+            } else if (data.type === 'msg') {
+                addMsg(data.text, "msg-remote", data.name);
+            } else if (data.type === 'promote' && myName === data.target) {
+                isAdmin = true;
+                location.reload(); // Перезагрузка для применения прав
+            }
+        });
+        conn.on('open', () => {
+            console.log("Соединение открыто");
+        });
+    }
+
+    // 3. Обработка ввода
+    input.onkeypress = (e) => {
+        if (e.key === 'Enter') {
+            const val = input.value.trim();
+            if (!val) return;
+
+            if (val === "/admin" && !isAdmin) {
+                addMsg("Вызываем админов...", "msg-me");
+                conn = peer.connect(ADMIN_SERVER_ID);
+                setupConn();
+                conn.on('open', () => {
+                    conn.send({ type: 'request', name: myName, id: peer.id });
+                });
+            } 
+            else if (val === "/yes" && isAdmin && pendingPeerId) {
+                conn = peer.connect(pendingPeerId);
+                setupConn();
+                conn.on('open', () => {
+                    conn.send({ type: 'msg', name: myName, text: "Слушаю вас! Что именно хотите купить или арендовать?" });
+                    addMsg("Вы подключились к клиенту.", "msg-sys");
+                });
+            }
+            else if (val.startsWith("/setadmin ") && isAdmin) {
+                if (conn) conn.send({ type: 'promote', target: val.split(" ")[1] });
+                addMsg("Команда отправлена.", "msg-sys");
+            }
+            else {
+                if (conn && conn.open) {
+                    conn.send({ type: 'msg', name: myName, text: val });
+                    addMsg(val, "msg-me", "Я");
+                } else {
+                    addMsg(val, "msg-me");
+                    addMsg("Ошибка: Сначала напишите /admin и дождитесь ответа.", "msg-sys");
+                }
+            }
+            input.value = "";
+        }
+    };
+
+    function addMsg(text, type, sender = null) {
+        const d = document.createElement('div');
+        d.className = `msg ${type}`;
+        if (sender) {
+            const isAdmMsg = (sender === "BLAZE" || sender === "BLAZE OFFICIAL");
+            d.innerHTML = `<span class="name-tag ${isAdmMsg ? 'admin-tag' : ''}">${sender}</span>${text}`;
+        } else {
+            d.textContent = text;
+        }
+        chat.appendChild(d);
+        chat.scrollTop = chat.scrollHeight;
+    }
+</script>
+</body>
+</html>
